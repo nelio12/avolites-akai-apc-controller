@@ -1,0 +1,33 @@
+@import 'tailwindcss';
+
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #09090b;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.apc-chassis {
+  background-image:
+    radial-gradient(circle at 20% 0%, rgba(251, 191, 36, 0.08), transparent 40%),
+    linear-gradient(180deg, #27272a, #09090b);
+}
+
+.apc-pad:active {
+  transform: scale(0.94);
+}
