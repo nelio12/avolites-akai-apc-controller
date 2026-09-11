@@ -1,6 +1,6 @@
 export type TriggerType = 'flash' | 'latch'
 export type LedBehaviorMode = 'standard' | 'inverted' | 'background'
-export type LedColorName = 'green' | 'yellow' | 'red' | 'orange' | 'blue' | 'purple' | 'white'
+export type LedColorName = 'green' | 'yellow' | 'red'
 export type ApcModel = 'apc-mini' | 'apc-mini-mk2'
 export type ControlKind = 'pad' | 'track' | 'scene' | 'shift' | 'fader'
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error'
@@ -13,6 +13,7 @@ export interface PadMappingConfig {
   ledBehavior: LedBehaviorMode
   activeColor: string
   backgroundColor?: string
+  backgroundBrightness?: number
 }
 
 export interface TitanHandleLocation {
@@ -78,7 +79,8 @@ export interface ApcControl {
   cc?: number
 }
 
-export const LED_COLORS: LedColorName[] = ['green', 'yellow', 'red', 'orange', 'blue', 'purple', 'white']
+export const LED_COLORS: LedColorName[] = ['green', 'red', 'yellow']
+export const BACKGROUND_BRIGHTNESS_LEVELS = [10, 25, 50, 75] as const
 
 export const TRIGGER_TYPES: { value: TriggerType; label: string; description: string }[] = [
   { value: 'flash', label: 'Flash', description: 'Enciende al pulsar y apaga al soltar.' },
@@ -86,7 +88,19 @@ export const TRIGGER_TYPES: { value: TriggerType; label: string; description: st
 ]
 
 export const LED_BEHAVIOR_MODES: { value: LedBehaviorMode; label: string; description: string }[] = [
-  { value: 'standard', label: 'Standard', description: 'Apagado en reposo. Color activo cuando Titan dispara.' },
-  { value: 'inverted', label: 'Inverted', description: 'Encendido en reposo. Se apaga cuando el efecto está activo.' },
-  { value: 'background', label: 'Background', description: 'Color de fondo en reposo y color activo al disparar.' }
+  {
+    value: 'standard',
+    label: 'Standard',
+    description: 'Apagado cuando el playback está inactivo. Color activo al disparar.'
+  },
+  {
+    value: 'inverted',
+    label: 'Inverted',
+    description: 'Encendido en reposo. Se apaga cuando el playback está activo.'
+  },
+  {
+    value: 'background',
+    label: 'Background',
+    description: 'Inactivo: color de fondo. Activo: color primario. El Mini original no regula brillo.'
+  }
 ]

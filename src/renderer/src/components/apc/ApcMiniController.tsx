@@ -13,6 +13,7 @@ export function ApcMiniController() {
   const isListeningToTitan = useAppStore((state) => state.isListeningToTitan)
   const lastMidiControlId = useAppStore((state) => state.lastMidiControlId)
   const pressedControlIds = useAppStore((state) => state.pressedControlIds)
+  const latchedControlIds = useAppStore((state) => state.latchedControlIds)
   const playbacks = useAppStore((state) => state.playbacks)
   const faderValues = useAppStore((state) => state.faderValues)
   const midiModel = useAppStore((state) => state.midiModel)
@@ -69,7 +70,7 @@ export function ApcMiniController() {
                         listening={isListeningToTitan && selectedPadId === pad.id}
                         mappingMode={isMappingMode}
                         live={lastMidiControlId === pad.id || pressedControlIds.includes(pad.id)}
-                        active={isPlaybackActive(mapping, playbacks)}
+                        active={isPadLit(mapping, playbacks, pressedControlIds, latchedControlIds)}
                         onSelect={() => selectPad(pad.id)}
                         onDrop={(event) => dropOn(pad.id, event)}
                       />
@@ -81,7 +82,7 @@ export function ApcMiniController() {
                     selected={selectedPadId === scene.id}
                     listening={isListeningToTitan && selectedPadId === scene.id}
                     live={lastMidiControlId === scene.id || pressedControlIds.includes(scene.id)}
-                    active={isPlaybackActive(sceneMapping, playbacks)}
+                    active={isPadLit(sceneMapping, playbacks, pressedControlIds, latchedControlIds)}
                     onSelect={() => selectPad(scene.id)}
                     onDrop={(event) => dropOn(scene.id, event)}
                   />
@@ -99,7 +100,7 @@ export function ApcMiniController() {
                   selected={selectedPadId === track.id}
                   listening={isListeningToTitan && selectedPadId === track.id}
                   live={lastMidiControlId === track.id || pressedControlIds.includes(track.id)}
-                  active={isPlaybackActive(mapping, playbacks)}
+                  active={isPadLit(mapping, playbacks, pressedControlIds, latchedControlIds)}
                   onSelect={() => selectPad(track.id)}
                   onDrop={(event) => dropOn(track.id, event)}
                   className="mt-2"
@@ -112,7 +113,7 @@ export function ApcMiniController() {
               selected={selectedPadId === APC_SHIFT.id}
               listening={isListeningToTitan && selectedPadId === APC_SHIFT.id}
               live={lastMidiControlId === APC_SHIFT.id || pressedControlIds.includes(APC_SHIFT.id)}
-              active={isPlaybackActive(mappingByPad(mappings, APC_SHIFT.id), playbacks)}
+              active={isPadLit(mappingByPad(mappings, APC_SHIFT.id), playbacks, pressedControlIds, latchedControlIds)}
               onSelect={() => selectPad(APC_SHIFT.id)}
               onDrop={(event) => dropOn(APC_SHIFT.id, event)}
               className="mt-2"
@@ -160,7 +161,7 @@ function MappingStatusBar() {
 
   return (
     <div className="border-b border-amber-400/30 bg-amber-950/30 px-6 py-2 text-center text-xs text-amber-200">
-      Modo asignar. Selecciona un pad (pantalla o APC) y elige un playback, o escucha Titan.
+      Modo asignar. Selecciona un pad (pantalla o APC) y elige un playback, o escucha Titan desde el inspector.
     </div>
   )
 }
@@ -174,12 +175,31 @@ function isPlaybackActive(mapping: PadMappingConfig | undefined, playbacks: { ti
   return Boolean(titanId != null && playbacks.some((item) => item.titanId === titanId && item.active))
 }
 
+function isPadLit(
+  mapping: PadMappingConfig | undefined,
+  playbacks: { titanId: number; active: boolean }[],
+  pressedIds: string[],
+  latchedIds: string[]
+): boolean {
+  if (!mapping) {
+    return false
+  }
+  if (latchedIds.includes(mapping.padId)) {
+    return true
+  }
+  if (mapping.triggerType === 'flash' && pressedIds.includes(mapping.padId)) {
+    return true
+  }
+  return isPlaybackActive(mapping, playbacks)
+}
+
 function padSurfaceColor(mapping: PadMappingConfig | undefined, active: boolean): string {
   if (!mapping) {
     return '#111827'
   }
   const resolved = resolvePadLed(mapping, active)
-  return ledCss(parseLedColor(resolved.color), resolved.behavior)
+  const canDim = useAppStore.getState().midiModel === 'apc-mini-mk2'
+  return ledCss(parseLedColor(resolved.color), resolved.behavior, canDim ? resolved.brightness : 100)
 }
 
 function Pad({

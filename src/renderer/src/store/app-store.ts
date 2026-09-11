@@ -38,6 +38,7 @@ interface AppState {
   runtimeError: string | null
   faderValues: Record<string, number>
   pressedControlIds: string[]
+  latchedControlIds: string[]
 
   setMappingMode: (enabled: boolean) => void
   selectPad: (padId: string | null) => void
@@ -65,13 +66,16 @@ interface AppState {
   assignPlaybackToPad: (padId: string, playback: TitanPlayback) => void
   updatePadMapping: (
     padId: string,
-    patch: Partial<Pick<PadMappingConfig, 'triggerType' | 'ledBehavior' | 'activeColor' | 'backgroundColor'>>
+    patch: Partial<
+      Pick<PadMappingConfig, 'triggerType' | 'ledBehavior' | 'activeColor' | 'backgroundColor' | 'backgroundBrightness'>
+    >
   ) => void
   clearMapping: (padId: string) => void
   setProfileName: (name: string) => void
   setRuntimeError: (error: string | null) => void
   setFaderValue: (controlId: string, value: number) => void
   setPressedControlIds: (ids: string[]) => void
+  setLatchedControlIds: (ids: string[]) => void
   loadProfile: (profile: MappingProfileFile) => void
   toProfile: () => MappingProfileFile
 }
@@ -106,6 +110,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   runtimeError: null,
   faderValues: {},
   pressedControlIds: [],
+  latchedControlIds: [],
 
   setMappingMode: (enabled) =>
     set({
@@ -210,8 +215,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     const next: PadMappingConfig = { ...current, ...patch }
-    if (patch.ledBehavior === 'background' && !next.backgroundColor) {
-      next.backgroundColor = 'yellow'
+    if (patch.ledBehavior === 'background') {
+      if (!next.backgroundColor) {
+        next.backgroundColor = next.activeColor
+      }
+      if (next.backgroundBrightness == null) {
+        next.backgroundBrightness = 25
+      }
     }
 
     const mappings = cloneMappings(get().mappings)
@@ -235,6 +245,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
 
   setPressedControlIds: (ids) => set({ pressedControlIds: ids }),
+  setLatchedControlIds: (ids) => set({ latchedControlIds: ids }),
 
   loadProfile: (profile) =>
     set({
@@ -263,4 +274,5 @@ export type PadMappingPatch = Partial<{
   ledBehavior: LedBehaviorMode
   activeColor: LedColorName
   backgroundColor: LedColorName
+  backgroundBrightness: number
 }>

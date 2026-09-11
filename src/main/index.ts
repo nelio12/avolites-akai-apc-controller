@@ -1,9 +1,17 @@
-import { app, BrowserWindow, ipcMain, session, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, powerSaveBlocker, session, shell } from 'electron'
 import { join } from 'node:path'
 import { loadSettings, saveSettings } from './settings'
 import { proxyTitanRequest } from './titan-proxy'
+import { discoverTitanConsoles } from './titan-discover'
 import { loadProfileFromDisk, saveProfileToDisk } from './profiles'
 import type { AppSettings, MappingProfile, TitanRequestPayload } from '../shared/ipc'
+
+const CLOCK_MS = 100
+
+app.commandLine.appendSwitch('disable-renderer-backgrounding')
+app.commandLine.appendSwitch('disable-background-timer-throttling')
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,IntensiveWakeUpThrottling')
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -19,8 +27,21 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       sandbox: false,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: false
     }
+  })
+
+  mainWindow.webContents.setBackgroundThrottling(false)
+
+  const clock = setInterval(() => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('clock:tick', Date.now())
+    }
+  }, CLOCK_MS)
+
+  mainWindow.on('closed', () => {
+    clearInterval(clock)
   })
 
   mainWindow.on('ready-to-show', () => {
@@ -51,6 +72,10 @@ function registerIpc(): void {
     return proxyTitanRequest(payload)
   })
 
+  ipcMain.handle('titan:discover', async (_event, preferredHost?: string) => {
+    return discoverTitanConsoles(preferredHost)
+  })
+
   ipcMain.handle('profiles:save', async (_event, profile: MappingProfile) => {
     return saveProfileToDisk(profile)
   })
@@ -64,6 +89,8 @@ app.whenReady().then(() => {
   if (process.platform === 'win32') {
     app.setAppUserModelId('com.titanapc.mapper')
   }
+
+  powerSaveBlocker.start('prevent-app-suspension')
 
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     callback(permission === 'midi' || permission === 'midiSysex')

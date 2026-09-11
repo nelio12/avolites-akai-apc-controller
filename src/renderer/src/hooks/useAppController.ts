@@ -6,7 +6,7 @@ import { useAppStore } from '@/store/app-store'
 import type { MappingProfileFile } from '@/types'
 import { titanIdFromMapping } from '@/lib/mapping'
 
-const POLL_MS = 900
+const POLL_MS = 150
 
 export function useAppController(): void {
   const mappings = useAppStore((state) => state.mappings)
@@ -14,7 +14,6 @@ export function useAppController(): void {
   const selectedPadId = useAppStore((state) => state.selectedPadId)
   const isListeningToTitan = useAppStore((state) => state.isListeningToTitan)
   const midiModel = useAppStore((state) => state.midiModel)
-  const titanStatus = useAppStore((state) => state.titanStatus)
   const playbacks = useAppStore((state) => state.playbacks)
 
   useEffect(() => {
@@ -38,6 +37,9 @@ export function useAppController(): void {
 
       try {
         await midiService.initialize()
+        mappingEngine.setFaderErrorHandler((message) => {
+          useAppStore.getState().setRuntimeError(message)
+        })
       } catch (error) {
         if (cancelled) {
           return
@@ -54,6 +56,44 @@ export function useAppController(): void {
       void connectTitan(settings.titanHost, settings.titanPort)
     }
 
+    let lastModel: typeof midiModel = null
+    let lastGeneration = -1
+    let pollInFlight = false
+    let pollFailures = 0
+    let lastPollAt = 0
+
+    const unsubscribeClock = window.api.clock.onTick((now) => {
+      mappingEngine.handleClock(now)
+      if (useAppStore.getState().titanStatus !== 'connected') {
+        pollFailures = 0
+        return
+      }
+      if (pollInFlight || now - lastPollAt < POLL_MS) {
+        return
+      }
+      lastPollAt = now
+      pollInFlight = true
+      void titanApi
+        .listPlaybacks()
+        .then((next) => {
+          pollFailures = 0
+          useAppStore.getState().setPlaybacks(next)
+          useAppStore.getState().setTitanStatus({ status: 'connected', error: null })
+        })
+        .catch((error) => {
+          pollFailures += 1
+          if (pollFailures >= 3) {
+            useAppStore.getState().setTitanStatus({
+              status: 'error',
+              error: error instanceof Error ? error.message : 'Se perdió la conexión con Titan.'
+            })
+          }
+        })
+        .finally(() => {
+          pollInFlight = false
+        })
+    })
+
     const unsubscribeStatus = midiService.onStatus((status) => {
       useAppStore.getState().setMidiStatus({
         status: status.connected ? 'connected' : status.error ? 'error' : 'idle',
@@ -62,32 +102,43 @@ export function useAppController(): void {
         error: status.error,
         devices: status.devices
       })
-      if (status.model) {
+      if (status.model && status.model !== lastModel) {
+        lastModel = status.model
         mappingEngine.setModel(status.model)
+      }
+      if (status.connected && status.generation !== lastGeneration && status.generation > 0) {
+        lastGeneration = status.generation
+        mappingEngine.refreshLeds()
       }
     })
 
     const unsubscribeEvents = midiService.onEvent((event) => {
-      void (async () => {
-        if (event.kind === 'cc') {
-          const faderIndex = event.controller - 48
-          if (faderIndex >= 0 && faderIndex <= 8) {
-            useAppStore.getState().setFaderValue(`fader-${faderIndex}`, event.value)
-          }
+      if (event.kind === 'cc') {
+        const faderIndex = event.controller - 48
+        if (faderIndex >= 0 && faderIndex <= 8) {
+          useAppStore.getState().setFaderValue(`fader-${faderIndex}`, event.value)
         }
+      }
 
-        const result = await mappingEngine.handleMidi(event)
-        const pressed = [...mappingEngine.getPressedControls()]
-        useAppStore.getState().setPressedControlIds(pressed)
-        if (result.controlId) {
-          useAppStore.getState().setLastMidiControlId(result.controlId)
-          const mappingMode = useAppStore.getState().isMappingMode
-          if (mappingMode && (event.kind === 'cc' || (event.kind === 'note' && event.pressed))) {
-            useAppStore.getState().selectPad(result.controlId)
-          }
+      const ingested = mappingEngine.ingestMidi(event)
+      useAppStore.getState().setPressedControlIds([...mappingEngine.getPressedControls()])
+      useAppStore.getState().setLatchedControlIds(mappingEngine.getLatchedControls())
+      if (ingested.controlId) {
+        useAppStore.getState().setLastMidiControlId(ingested.controlId)
+        const mappingMode = useAppStore.getState().isMappingMode
+        if (mappingMode && (event.kind === 'cc' || (event.kind === 'note' && event.pressed))) {
+          useAppStore.getState().selectPad(ingested.controlId)
         }
-        useAppStore.getState().setRuntimeError(result.error ?? null)
-      })()
+      }
+
+      if (!ingested.trigger) {
+        return
+      }
+
+      void mappingEngine.commitTrigger(ingested.trigger.mapping, ingested.trigger.pressed).then((error) => {
+        useAppStore.getState().setLatchedControlIds(mappingEngine.getLatchedControls())
+        useAppStore.getState().setRuntimeError(error)
+      })
     })
 
     void boot()
@@ -96,6 +147,7 @@ export function useAppController(): void {
       cancelled = true
       unsubscribeStatus()
       unsubscribeEvents()
+      unsubscribeClock()
     }
   }, [])
 
@@ -128,40 +180,6 @@ export function useAppController(): void {
     const active = playbacks.filter((item) => item.active && ids.includes(item.titanId)).map((item) => item.titanId)
     mappingEngine.setActiveTitanIds(active)
   }, [playbacks, mappings])
-
-  useEffect(() => {
-    if (titanStatus !== 'connected') {
-      return
-    }
-
-    let disposed = false
-    const tick = async (): Promise<void> => {
-      try {
-        const next = await titanApi.listPlaybacks()
-        if (!disposed) {
-          useAppStore.getState().setPlaybacks(next)
-          useAppStore.getState().setTitanStatus({ status: 'connected', error: null })
-        }
-      } catch (error) {
-        if (!disposed) {
-          useAppStore.getState().setTitanStatus({
-            status: 'error',
-            error: error instanceof Error ? error.message : 'Se perdió la conexión con Titan.'
-          })
-        }
-      }
-    }
-
-    void tick()
-    const handle = window.setInterval(() => {
-      void tick()
-    }, POLL_MS)
-
-    return () => {
-      disposed = true
-      window.clearInterval(handle)
-    }
-  }, [titanStatus])
 }
 
 export async function connectTitan(host: string, port: number): Promise<void> {

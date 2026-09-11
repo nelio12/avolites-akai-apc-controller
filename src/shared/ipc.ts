@@ -14,6 +14,15 @@ export type TitanRequestResult = {
   text: string
 }
 
+export type DiscoveredTitan = {
+  host: string
+  port: number
+  showName: string
+  version: string | null
+  computerName: string | null
+  hardware: string | null
+}
+
 export type AppSettings = {
   titanHost: string
   titanPort: number

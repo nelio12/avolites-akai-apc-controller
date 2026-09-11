@@ -21,7 +21,6 @@ export function AppHeader() {
   const profileName = useAppStore((state) => state.profileName)
   const setProfileName = useAppStore((state) => state.setProfileName)
   const isMappingMode = useAppStore((state) => state.isMappingMode)
-  const isListeningToTitan = useAppStore((state) => state.isListeningToTitan)
   const setMappingMode = useAppStore((state) => state.setMappingMode)
 
   return (
@@ -41,12 +40,30 @@ export function AppHeader() {
       </div>
 
       <div className="flex flex-1 items-center justify-center gap-3">
-        <StatusChip
-          ok={midiStatus === 'connected'}
-          label={midiStatus === 'connected' ? midiDeviceName ?? 'APC Mini' : midiError ?? 'MIDI desconectado'}
-          detail={midiModel === 'apc-mini-mk2' ? 'MK2' : midiModel === 'apc-mini' ? 'Mini' : undefined}
-          icon={<Radio className="h-3.5 w-3.5" />}
-        />
+        <button
+          type="button"
+          title="Si los LEDs no coinciden con la app, pulsa para cambiar Mini / MK2"
+          onClick={() => {
+            if (midiStatus !== 'connected') {
+              return
+            }
+            const next = midiModel === 'apc-mini-mk2' ? 'apc-mini' : 'apc-mini-mk2'
+            midiService.forceLedProtocol(next)
+          }}
+        >
+          <StatusChip
+            ok={midiStatus === 'connected' && !midiError}
+            label={
+              midiError
+                ? midiError
+                : midiStatus === 'connected'
+                  ? midiDeviceName ?? 'APC Mini'
+                  : 'MIDI desconectado'
+            }
+            detail={midiModel === 'apc-mini-mk2' ? 'MK2' : midiModel === 'apc-mini' ? 'Mini' : undefined}
+            icon={<Radio className="h-3.5 w-3.5" />}
+          />
+        </button>
         <button type="button" onClick={() => setSettingsOpen(true)}>
           <StatusChip
             ok={titanStatus === 'connected'}
@@ -87,9 +104,9 @@ export function AppHeader() {
           onClick={() => setMappingMode(!isMappingMode)}
         >
           <Crosshair className="h-3.5 w-3.5" />
-          {isMappingMode ? (isListeningToTitan ? 'Asignar · Escucha' : 'Asignar ON') : 'Asignar'}
+          {isMappingMode ? 'Asignar ON' : 'Asignar'}
         </Button>
-        <Button variant="secondary" size="sm" onClick={() => void midiService.autoConnect()}>
+        <Button variant="secondary" size="sm" onClick={() => void midiService.reconnect()}>
           Reconectar MIDI
         </Button>
         <Button variant="secondary" size="sm" onClick={() => setSettingsOpen(true)}>

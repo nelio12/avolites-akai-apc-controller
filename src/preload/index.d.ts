@@ -1,4 +1,4 @@
-import type { AppSettings, MappingProfile, TitanRequestPayload, TitanRequestResult } from '../shared/ipc'
+import type { AppSettings, DiscoveredTitan, MappingProfile, TitanRequestPayload, TitanRequestResult } from '../shared/ipc'
 
 export interface DesktopApi {
   settings: {
@@ -7,6 +7,10 @@ export interface DesktopApi {
   }
   titan: {
     request: (payload: TitanRequestPayload) => Promise<TitanRequestResult>
+    discover: (preferredHost?: string) => Promise<DiscoveredTitan[]>
+  }
+  clock: {
+    onTick: (listener: (now: number) => void) => () => void
   }
   profiles: {
     save: (profile: MappingProfile) => Promise<{ canceled: boolean; filePath?: string }>

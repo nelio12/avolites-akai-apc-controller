@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AppSettings, MappingProfile, TitanRequestPayload, TitanRequestResult } from '../shared/ipc'
+import type { AppSettings, DiscoveredTitan, MappingProfile, TitanRequestPayload, TitanRequestResult } from '../shared/ipc'
 
 const api = {
   settings: {
@@ -8,7 +8,16 @@ const api = {
   },
   titan: {
     request: (payload: TitanRequestPayload): Promise<TitanRequestResult> =>
-      ipcRenderer.invoke('titan:request', payload)
+      ipcRenderer.invoke('titan:request', payload),
+    discover: (preferredHost?: string): Promise<DiscoveredTitan[]> =>
+      ipcRenderer.invoke('titan:discover', preferredHost)
+  },
+  clock: {
+    onTick: (listener: (now: number) => void): (() => void) => {
+      const handler = (_event: unknown, now: number): void => listener(now)
+      ipcRenderer.on('clock:tick', handler)
+      return () => ipcRenderer.removeListener('clock:tick', handler)
+    }
   },
   profiles: {
     save: (profile: MappingProfile): Promise<{ canceled: boolean; filePath?: string }> =>

@@ -1,7 +1,7 @@
 import { ALL_APC_CONTROLS, findControlByCc, findControlById, findControlByNote, getControlNote } from '@/lib/apc-layout'
-import { buildLedCommand, selectionLedCommand } from '@/lib/apc-leds'
+import { buildLedMessages } from '@/lib/apc-leds'
 import { parseLedColor, resolvePadLed, titanIdFromMapping } from '@/lib/mapping'
-import type { ApcModel, MidiInputEvent, PadMappingConfig, TriggerType } from '@/types'
+import type { ApcControl, ApcModel, MidiInputEvent, PadMappingConfig, TriggerType } from '@/types'
 import { midiService } from './MidiService'
 import { titanApi } from './TitanApiService'
 
@@ -13,12 +13,24 @@ export class MappingEngine {
   private activeTitanIds = new Set<number>()
   private latched = new Set<string>()
   private lastFaderSent = new Map<string, number>()
+  private pendingFader = new Map<string, { mapping: PadMappingConfig; value: number }>()
+  private faderTimers = new Map<string, number>()
   private pressedControls = new Set<string>()
   private mappingMode = false
   private selectedPadId: string | null = null
   private listening = false
+  private blinkOn = true
+  private lastBlinkAt = 0
+  private onFaderError: ((message: string | null) => void) | null = null
+
+  setFaderErrorHandler(handler: ((message: string | null) => void) | null): void {
+    this.onFaderError = handler
+  }
 
   setModel(model: ApcModel): void {
+    if (this.model === model) {
+      return
+    }
     this.model = model
     this.refreshLeds()
   }
@@ -28,12 +40,14 @@ export class MappingEngine {
     if (!enabled) {
       this.listening = false
     }
+    this.restartSelectionBlink()
     this.refreshLeds()
   }
 
   setSelectedPad(padId: string | null): void {
     this.selectedPadId = padId
     if (this.mappingMode) {
+      this.restartSelectionBlink()
       this.refreshLeds()
     }
   }
@@ -41,6 +55,7 @@ export class MappingEngine {
   setListening(listening: boolean): void {
     this.listening = listening
     if (this.mappingMode) {
+      this.restartSelectionBlink()
       this.refreshLeds()
     }
   }
@@ -64,17 +79,21 @@ export class MappingEngine {
     return this.pressedControls
   }
 
-  async handleMidi(event: MidiInputEvent): Promise<{ controlId?: string; error?: string }> {
+  getLatchedControls(): string[] {
+    return [...this.latched]
+  }
+
+  ingestMidi(event: MidiInputEvent): { controlId?: string; trigger?: { mapping: PadMappingConfig; pressed: boolean } } {
     if (event.kind === 'cc') {
       const control = findControlByCc(event.controller)
       if (!control) {
         return {}
       }
       const mapping = this.mappings.get(control.id)
-      if (!mapping || this.mappingMode) {
-        return { controlId: control.id }
+      if (mapping) {
+        this.queueFader(mapping, event.value)
       }
-      return this.handleFader(mapping, event.value)
+      return { controlId: control.id }
     }
 
     const control = findControlByNote(event.note, this.model)
@@ -91,6 +110,7 @@ export class MappingEngine {
     if (this.mappingMode) {
       if (event.pressed) {
         this.selectedPadId = control.id
+        this.restartSelectionBlink()
         this.refreshLeds()
       }
       return { controlId: control.id }
@@ -101,16 +121,61 @@ export class MappingEngine {
       return { controlId: control.id }
     }
 
-    try {
-      await this.handleTrigger(mapping, event.pressed)
-      this.refreshControlLed(mapping)
-      return { controlId: control.id }
-    } catch (error) {
-      return {
-        controlId: control.id,
-        error: error instanceof Error ? error.message : 'Error al ejecutar el mapeo.'
+    if (mapping.triggerType === 'latch' && event.pressed) {
+      if (this.latched.has(mapping.padId)) {
+        this.latched.delete(mapping.padId)
+      } else {
+        this.latched.add(mapping.padId)
       }
     }
+
+    this.refreshControlLed(mapping)
+    return { controlId: control.id, trigger: { mapping, pressed: event.pressed } }
+  }
+
+  async commitTrigger(mapping: PadMappingConfig, pressed: boolean): Promise<string | null> {
+    try {
+      await this.handleTrigger(mapping, pressed)
+      this.refreshControlLed(mapping)
+      return null
+    } catch (error) {
+      if (mapping.triggerType === 'latch' && pressed) {
+        if (this.latched.has(mapping.padId)) {
+          this.latched.delete(mapping.padId)
+        } else {
+          this.latched.add(mapping.padId)
+        }
+        this.refreshControlLed(mapping)
+      }
+      return error instanceof Error ? error.message : 'Error al ejecutar el mapeo.'
+    }
+  }
+
+  handleClock(now: number): void {
+    if (!this.mappingMode || this.selectedPadId == null) {
+      return
+    }
+    if (!this.listening && this.mappings.has(this.selectedPadId)) {
+      return
+    }
+    if (now - this.lastBlinkAt < 280) {
+      return
+    }
+    this.lastBlinkAt = now
+    this.blinkOn = !this.blinkOn
+    const control = findControlById(this.selectedPadId)
+    if (control && control.kind !== 'fader') {
+      this.paintSelectionLed(control, this.blinkOn)
+    }
+  }
+
+  async handleMidi(event: MidiInputEvent): Promise<{ controlId?: string; error?: string }> {
+    const ingested = this.ingestMidi(event)
+    if (!ingested.trigger) {
+      return { controlId: ingested.controlId }
+    }
+    const error = await this.commitTrigger(ingested.trigger.mapping, ingested.trigger.pressed)
+    return { controlId: ingested.controlId, error: error ?? undefined }
   }
 
   refreshLeds(): void {
@@ -124,27 +189,48 @@ export class MappingEngine {
         continue
       }
 
-      const kind = control.kind === 'pad' ? 'pad' : 'round'
-
-      if (this.mappingMode && this.selectedPadId === control.id) {
-        midiService.sendLed(
-          selectionLedCommand({
-            model: this.model,
-            note,
-            kind,
-            listening: this.listening
-          })
-        )
+      if (this.mappingMode && this.selectedPadId === control.id && (this.listening || !this.mappings.has(control.id))) {
+        this.paintSelectionLed(control, this.blinkOn)
         continue
       }
 
       const mapping = this.mappings.get(control.id)
       if (!mapping) {
-        midiService.sendLed({ note, channel: 0, velocity: 0 })
+        this.sendLedMessages([{ note, channel: 0, velocity: 0 }])
         continue
       }
       this.refreshControlLed(mapping)
     }
+  }
+
+  private restartSelectionBlink(): void {
+    this.blinkOn = true
+    this.lastBlinkAt = Date.now()
+  }
+
+  private paintSelectionLed(control: ApcControl, on: boolean): void {
+    const note = getControlNote(control, this.model)
+    if (note == null) {
+      return
+    }
+
+    if (!on) {
+      this.sendLedMessages([{ note, channel: 0, velocity: 0 }])
+      return
+    }
+
+    const kind = control.kind === 'pad' ? 'pad' : 'round'
+    const color = this.listening ? 'red' : 'yellow'
+
+    this.sendLedMessages(
+      buildLedMessages({
+        model: this.model,
+        note,
+        kind,
+        color,
+        behavior: 'solid'
+      })
+    )
   }
 
   private refreshControlLed(mapping: PadMappingConfig): void {
@@ -165,15 +251,22 @@ export class MappingEngine {
     const resolved = resolvePadLed(mapping, active)
     const kind = control.kind === 'pad' ? 'pad' : 'round'
 
-    midiService.sendLed(
-      buildLedCommand({
+    this.sendLedMessages(
+      buildLedMessages({
         model: this.model,
         note,
         kind,
         color: parseLedColor(resolved.color),
-        behavior: resolved.behavior
+        behavior: resolved.behavior,
+        brightness: this.model === 'apc-mini-mk2' ? resolved.brightness : 100
       })
     )
+  }
+
+  private sendLedMessages(commands: { note: number; channel: number; velocity: number }[]): void {
+    for (const command of commands) {
+      midiService.sendLed(command)
+    }
   }
 
   private async handleTrigger(mapping: PadMappingConfig, pressed: boolean): Promise<void> {
@@ -201,37 +294,49 @@ export class MappingEngine {
     }
 
     await titanApi.toggleLatch(titanId)
-    if (this.latched.has(mapping.padId)) {
-      this.latched.delete(mapping.padId)
-    } else {
-      this.latched.add(mapping.padId)
-    }
   }
 
-  private async handleFader(
-    mapping: PadMappingConfig,
-    value: number
-  ): Promise<{ controlId: string; error?: string }> {
+  private queueFader(mapping: PadMappingConfig, value: number): void {
+    this.pendingFader.set(mapping.padId, { mapping, value })
+    if (this.faderTimers.has(mapping.padId)) {
+      return
+    }
+
+    const elapsed = Date.now() - (this.lastFaderSent.get(mapping.padId) ?? 0)
+    const wait = Math.max(0, FADER_THROTTLE_MS - elapsed)
+    const timer = window.setTimeout(() => {
+      this.faderTimers.delete(mapping.padId)
+      const pending = this.pendingFader.get(mapping.padId)
+      if (!pending) {
+        return
+      }
+      this.pendingFader.delete(mapping.padId)
+      void this.handleFader(pending.mapping, pending.value)
+    }, wait)
+    this.faderTimers.set(mapping.padId, timer)
+  }
+
+  private async handleFader(mapping: PadMappingConfig, value: number): Promise<void> {
     const titanId = titanIdFromMapping(mapping)
     if (titanId == null) {
-      return { controlId: mapping.padId, error: `Playback Titan inválido: ${mapping.titanPlaybackId}` }
+      this.onFaderError?.(`Playback Titan inválido: ${mapping.titanPlaybackId}`)
+      return
     }
 
-    const now = Date.now()
-    const last = this.lastFaderSent.get(mapping.padId) ?? 0
-    if (now - last < FADER_THROTTLE_MS) {
-      return { controlId: mapping.padId }
-    }
-    this.lastFaderSent.set(mapping.padId, now)
+    this.lastFaderSent.set(mapping.padId, Date.now())
 
     try {
-      await titanApi.setLevel(titanId, value / 127)
-      return { controlId: mapping.padId }
-    } catch (error) {
-      return {
-        controlId: mapping.padId,
-        error: error instanceof Error ? error.message : 'Error al enviar el fader.'
+      const level = value / 127
+      if (level <= 0.001) {
+        await titanApi.kill(titanId).catch(async () => {
+          await titanApi.setLevel(titanId, 0)
+        })
+      } else {
+        await titanApi.fireAtLevel(titanId, level, false)
       }
+      this.onFaderError?.(null)
+    } catch (error) {
+      this.onFaderError?.(error instanceof Error ? error.message : 'Error al enviar el fader.')
     }
   }
 }
